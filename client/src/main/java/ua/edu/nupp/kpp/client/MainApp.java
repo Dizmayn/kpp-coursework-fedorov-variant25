@@ -10,6 +10,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TableColumn;
@@ -208,32 +209,75 @@ public class MainApp extends Application {
         Button refresh = new Button("Оновити");
         refresh.setOnAction(e -> safe(this::refreshDocuments));
 
-        // Початок CSV-імпорту (Етап III): один тестовий рядок, без фонового Task.
-        Button importCsv = new Button("Імпорт першого рядка CSV (тест)");
-        importCsv.setOnAction(e -> safe(this::importFirstCsvRow));
+        // Фоновий CSV-імпорт через JavaFX Task (прогрес, статус, скасування).
+        Button importCsv = new Button("Імпортувати CSV");
+        Button cancelImport = new Button("Скасувати");
+        cancelImport.setDisable(true);
+        ProgressBar importProgress = new ProgressBar(0);
+        importProgress.setPrefWidth(220);
+        Label importStatus = new Label("Імпорт не запущено");
+        importCsv.setOnAction(e ->
+                startImport(importCsv, cancelImport, importProgress, importStatus));
 
         return layout(documentTable,
                 form(new String[]{"ID автора", "Назва", "Тип документа", "Строк погодження",
                                 "Критичність (0..100)", "Залежні процеси"},
                         authorId, title, docType, deadline, criticality, processes),
-                buttons(add, update, delete, refresh, importCsv));
+                new VBox(8, buttons(add, update, delete, refresh),
+                        new HBox(10, importCsv, cancelImport, importProgress, importStatus)));
     }
 
     /**
-     * CSV → рядок → клієнтський Document → HTTP → сервер. Перший рядок даних
-     * файлу sample-data/documents.csv передається серверу через
-     * HttpApprovalClient; запис у MySQL виконує сервер.
+     * Запускає ImportDocumentsTask у фоновому потоці. Властивості progress і message
+     * Task прив'язуються до елементів інтерфейсу; після завершення прив'язка
+     * скасовується, а кнопки повертаються у вихідний стан (також після помилки).
      */
-    private void importFirstCsvRow() {
-        try {
-            Document document = DocumentCsvReader.readFirstDocument(DocumentCsvReader.DEFAULT_PATH);
-            api.addDocument(document);
-            refreshDocuments();
-            showInfo("Серверу передано документ із CSV: " + document.getTitle());
-        } catch (IOException e) {
-            throw new ApiException("Не вдалося прочитати файл "
-                    + DocumentCsvReader.DEFAULT_PATH + ": " + e.getMessage(), e);
-        }
+    private void startImport(Button importCsv, Button cancelImport,
+                             ProgressBar progressBar, Label statusLabel) {
+        ImportDocumentsTask task =
+                new ImportDocumentsTask(DocumentCsvReader.DEFAULT_PATH, api);
+
+        importCsv.setDisable(true);
+        cancelImport.setDisable(false);
+        progressBar.progressProperty().bind(task.progressProperty());
+        statusLabel.textProperty().bind(task.messageProperty());
+        cancelImport.setOnAction(e -> task.cancel());
+
+        Runnable finish = () -> {
+            progressBar.progressProperty().unbind();
+            statusLabel.textProperty().unbind();
+            importCsv.setDisable(false);
+            cancelImport.setDisable(true);
+        };
+
+        task.setOnSucceeded(e -> {
+            finish.run();
+            progressBar.setProgress(1.0);
+            statusLabel.setText("Імпорт завершено. Передано записів: " + task.getValue());
+            safe(this::refreshDocuments);
+            showInfo("Імпорт завершено. Передано записів: " + task.getValue());
+        });
+        task.setOnFailed(e -> {
+            finish.run();
+            progressBar.setProgress(0);
+            Throwable error = task.getException();
+            String text = error instanceof IOException
+                    ? "Не вдалося прочитати файл " + DocumentCsvReader.DEFAULT_PATH
+                            + ": " + error.getMessage()
+                    : String.valueOf(error.getMessage());
+            statusLabel.setText("Помилка імпорту");
+            safe(this::refreshDocuments);
+            showError(text);
+        });
+        task.setOnCancelled(e -> {
+            finish.run();
+            statusLabel.setText("Імпорт скасовано");
+            safe(this::refreshDocuments);
+        });
+
+        Thread thread = new Thread(task, "csv-import");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     // ---------- Вкладка «Запити на погодження» ----------
