@@ -22,6 +22,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.io.IOException;
+
 /**
  * Графічний інтерфейс системи погодження внутрішніх документів.
  *
@@ -206,11 +208,32 @@ public class MainApp extends Application {
         Button refresh = new Button("Оновити");
         refresh.setOnAction(e -> safe(this::refreshDocuments));
 
+        // Початок CSV-імпорту (Етап III): один тестовий рядок, без фонового Task.
+        Button importCsv = new Button("Імпорт першого рядка CSV (тест)");
+        importCsv.setOnAction(e -> safe(this::importFirstCsvRow));
+
         return layout(documentTable,
                 form(new String[]{"ID автора", "Назва", "Тип документа", "Строк погодження",
                                 "Критичність (0..100)", "Залежні процеси"},
                         authorId, title, docType, deadline, criticality, processes),
-                buttons(add, update, delete, refresh));
+                buttons(add, update, delete, refresh, importCsv));
+    }
+
+    /**
+     * CSV → рядок → клієнтський Document → HTTP → сервер. Перший рядок даних
+     * файлу sample-data/documents.csv передається серверу через
+     * HttpApprovalClient; запис у MySQL виконує сервер.
+     */
+    private void importFirstCsvRow() {
+        try {
+            Document document = DocumentCsvReader.readFirstDocument(DocumentCsvReader.DEFAULT_PATH);
+            api.addDocument(document);
+            refreshDocuments();
+            showInfo("Серверу передано документ із CSV: " + document.getTitle());
+        } catch (IOException e) {
+            throw new ApiException("Не вдалося прочитати файл "
+                    + DocumentCsvReader.DEFAULT_PATH + ": " + e.getMessage(), e);
+        }
     }
 
     // ---------- Вкладка «Запити на погодження» ----------
@@ -328,6 +351,12 @@ public class MainApp extends Application {
         Alert alert = new Alert(Alert.AlertType.ERROR,
                 message == null ? "Невідома помилка" : message, ButtonType.OK);
         alert.setHeaderText("Помилка");
+        alert.showAndWait();
+    }
+
+    private static void showInfo(String message) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, message, ButtonType.OK);
+        alert.setHeaderText("Готово");
         alert.showAndWait();
     }
 
